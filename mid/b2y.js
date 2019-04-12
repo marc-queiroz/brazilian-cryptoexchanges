@@ -1,330 +1,353 @@
-// https://www.b2ybtc.com.br/api.html
-
 var q = require('q')
+var crypto = require('crypto')
 var moment = require('moment')
-var keys = require('../keys')
-var twoFactor = require('node-2fa')
-var WebSocket = require('ws')
-var waitUntil = require('wait-until')
+var request = require('request')
+var nonce = require('nonce')()
+var qs = require('querystring')
 
-let ENDPOINT_TRADE_API = 'wss://bitcointoyou.alphapoint.com/WSGateway/'
-let ws = new WebSocket(ENDPOINT_TRADE_API)
+let ENDPOINT_API = 'https://www.bitcointoyou.com/API'
 
-let listeners = {}
-let SessionToken = ''
-
-let instrumentDictTo = ['none', 'BTCBRL', 'ETHBRL']
-let instrumentDictFrom = {
-  BTCBRL: 1,
-  ETHBRL: 2
+let pairsDict = {
+  BTCBRL: 'BRLBTC',
+  LTCBRL: 'LTC',
+  ETHBRL: 'ETH'
 }
 
-module.exports = {
-  ENDPOINT_TRADE_API: ENDPOINT_TRADE_API,
-  ws: ws,
+let config
 
-  listeners: listeners,
-  SessionToken: SessionToken,
+function B2Y (_config) {
+  this.name = 'BitcoinToYou'
+  config = _config.b2y
+}
 
-  waitTillLogged: function () {
-    return new Promise((resolve, reject) => {
-      waitUntil(100, 100, function condition () {
-        return (SessionToken !== '')
-      }, function done () {
-        resolve()
-      })
+B2Y.prototype.setOrderbookListener = function (pairs, callback) {
+  setInterval(function () {
+    var promises = []
+    // console.log(pairs.BTCUSD.alias);
+    Object.keys(pairs).forEach(function (pair) {
+      promises.push(this.getOrderbook(pairs[pair].alias))
     })
-  },
-
-  setOrderbookListener: function (pairs, callback) {
-    setInterval(function () {
-      var promises = []
-      // console.log(pairs.BTCUSD.alias);
-      Object.keys(pairs).forEach(function (pair) {
-        promises.push(module.exports.getOrderbook(pair))
-      })
-      q.all(promises)
-        .then(function (res) {
-          callback(res)
-        })
-    }, 10000)
-  },
-
-  setBalanceListener: function (pairs, callback) {
-    setInterval(function () {
-      module.exports.getBalance().then(res => {
+    q.all(promises)
+      .then(function (res) {
         callback(res)
-      }).catch(err => {
-        console.error('ERROR' + err)
       })
-    }, 10000)
-  },
-
-  setTradesListener: function (pairs, callback) {
-    setInterval(function () {
-      var promises = []
-      Object.keys(pairs).forEach(function (pair) {
-        promises.push(module.exports.getTrades(pair))
-      })
-      q.all(promises)
-        .then(function (res) {
-          res.forEach(r => {
-            callback(r)
-          })
-        })
-        .catch(function (err) {
-          console.log(err)
-        })
-    }, 9000)
-  },
-
-  clearOrders: function (pair) {
-    return new Promise((resolve, reject) => {
-      privateRequest('CancelAllOrders', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID, // Gor using GetUserInfo
-        InstrumentId: instrumentDictFrom[pair]
-      }, (res) => {
-        try {
-          res = JSON.parse(res)
-          if (res.result) {
-            console.log('B2Y ORDERS CLEARED!')
-            resolve('B2Y ORDERS CLEARED')
-          } else reject(new Error('ERROR clearing B2Y orders!'))
-        } catch (err) {
-          reject(err)
-        }
-      })
-    })
-  },
-
-  getAccountInfo: function () {
-    return new Promise((resolve, reject) => {
-      privateRequest('GetUserInfo', {
-        OMSId: keys.b2y.OMSId // Got using GetUserInfo
-      }, (res) => {
-        console.log(res)
-      })
-    })
-  },
-
-  getOrderbook: function (pair) {
-    return new Promise((resolve, reject) => {
-      privateRequest('SubscribeLevel2', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        InstrumentId: instrumentDictFrom[pair],
-        Depth: 100
-      }, (res) => {
-        res = JSON.parse(res)
-        let orderbook = { buy: [], sell: [] }
-
-        res.forEach(order => {
-          orderbook[order[9] === 0 ? 'buy' : 'sell'].push({
-            price: order[6],
-            amount: order[8]
-          })
-        })
-
-        resolve(orderbook)
-      })
-      privateRequest('UnsubscribeLevel2', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        InstrumentId: instrumentDictFrom[pair],
-        Depth: 100
-      }, undefined)
-    })
-  },
-
-  getBalance: function () {
-    return new Promise((resolve, reject) => {
-      privateRequest('GetAccountPositions', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID // Gor using GetUserInfo
-      }, (res) => {
-        res = JSON.parse(res)
-        // console.log(res)
-        let balance = {}
-        res.forEach(curr => {
-          balance[curr.ProductSymbol] = curr.Amount
-        })
-
-        resolve(balance)
-      })
-    })
-  },
-
-  getOpenOrders: function (pair) {
-    return new Promise((resolve, reject) => {
-      privateRequest('GetOpenOrders', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID // Gor using GetUserInfo
-      }, (res) => {
-        console.log(res)
-
-        try {
-          res = JSON.parse(res).map(trade => {
-            let resultOrder = {
-              id: trade.OrderId,
-              side: trade.Side.toLowerCase(),
-              pair: instrumentDictTo[trade.Instrument],
-              price: trade.Price,
-              amount: trade.Quantity,
-              timestamp: moment(trade.ReceiveTime, 'x')
-            }
-            resultOrder.from = resultOrder.pair.substring(0, 3)
-            resultOrder.to = resultOrder.pair.substring(3, 6)
-
-            return resultOrder
-          })
-          resolve(res)
-        } catch (err) {
-          reject(err)
-        }
-      })
-    })
-  },
-
-  getTrades: function () {
-    return new Promise((resolve, reject) => {
-      privateRequest('GetAccountTrades', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID // Gor using GetUserInfo
-      }, (res) => {
-        // console.log(res);
-        try {
-          res = JSON.parse(res).map(trade => {
-            let resultOrder = {
-              id: trade.TradeId,
-              side: trade.Side.toLowerCase(),
-              pair: instrumentDictTo[trade.InstrumentId],
-              price: trade.Price,
-              amount: trade.Quantity,
-              fee: trade.Quantity * (trade.Fee * 0.01),
-              timestamp: moment(trade.TradeTimeMS, 'x')
-            }
-            resultOrder.from = resultOrder.pair.substring(0, 3)
-            resultOrder.to = resultOrder.pair.substring(3, 6)
-
-            return resultOrder
-          })
-          resolve(res)
-        } catch (err) {
-          reject(err)
-        }
-      })
-    })
-  },
-
-  sendOrder: function (pair, side, price, volume) {
-    return new Promise((resolve, reject) => {
-      privateRequest('SendOrder', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID, // Gor using GetUserInfo
-        ClientOrderId: 0,
-        Quantity: volume,
-        DisplayQuantity: 0,
-        UseDisplayQuantity: false,
-        LimitPrice: price,
-        OrderIdOCO: 0,
-        OrderType: 2,
-        PegPriceType: 1,
-        InstrumentId: instrumentDictFrom[pair],
-        TrailingAmount: 1.0,
-        LimitOffset: 2.0,
-        Side: side === 'buy' ? 0 : 1,
-        StopPrice: price,
-        TimeInForce: 1
-      }, (res) => {
-        try {
-          res = JSON.parse(res)
-
-          if (res.status === 'Accepted') {
-            console.log('ORDER CREATED FLOW: ' + res.OrderId)
-            resolve('FLOW Order created => ' + res.OrderId)
-          } else reject(res.errormsg)
-        } catch (err) {
-          console.error('Error placing order: ', err)
-          reject(err)
-        }
-      })
-    })
-  },
-
-  cancelOrder: function (pair, id) {
-    return new Promise((resolve, reject) => {
-      privateRequest('cancelOrder', {
-        OMSId: keys.b2y.OMSId, // Got using GetUserInfo
-        AccountID: keys.b2y.accountID, // Gor using GetUserInfo
-        OrderId: id
-      }, (res) => {
-        try {
-          res = JSON.parse(res)
-
-          if (res.result) resolve('FLOW Order cancelled => ' + id)
-          else reject(res.errormsg)
-        } catch (err) {
-          console.error('Error Cancelling order: ', err)
-          reject(err)
-        }
-      })
-    })
-  },
-
-  initWS: initWS()
+  }, 5000)
 }
 
-function setListener (request, callback) {
-  // console.log('SET LISTENER => '+ request);
-  listeners[request] = callback
+B2Y.prototype.setBalanceListener = function (pairs, callback) {
+  setInterval(function () {
+    this.getBalance().then(res => {
+      callback(res)
+    }).catch(err => {
+      console.error('ERROR B2Y ' + err)
+    })
+  }, 10000)
 }
 
-function triggerListener (data) {
-  data = JSON.parse(data)
-  // console.log('TRIGGERED LISTENER => '+ JSON.stringify(data.o));
-  if (listeners[data.n]) {
-    listeners[data.n](data.o)
-    listeners[data.n] = undefined
-  }
+B2Y.prototype.setTradesListener = function (pairs, callback) {
+  setInterval(function () {
+    var promises = []
+    Object.keys(pairs).forEach(function (pair) {
+      promises.push(this.getTrades(pair))
+    })
+    q.all(promises)
+      .then(function (res) {
+        res.forEach(r => {
+          // console.log(JSON.stringify(res, undefined, 2));
+          callback(r)
+        })
+      })
+      .catch(function (err) {
+        console.log(err)
+      })
+  }, 9000)
 }
 
-function privateRequest (method, params, callback) {
-  var frame = {
-    m: 0,
-    i: Math.round(new Date().getTime()),
-    n: method,
-    o: JSON.stringify(params)
-  }
+B2Y.prototype.clearOrders = function (pair) {
+  return new Promise((resolve, reject) => {
+    this.getOpenOrders(pair).then((orders) => {
+      // console.log(JSON.stringify(orders));
 
-  setListener(method, callback)
+      let cancels = []
 
-  ws.send(JSON.stringify(frame))
+      orders.buy.forEach(order => {
+        // CANCELLING BUY ORDERS
+        cancels.push(this.cancelOrder.bind(null, pair, order.id))
+      })
+      orders.sell.forEach(order => {
+        // CANCELLING SELL ORDERS
+        cancels.push(this.cancelOrder.bind(null, pair, order.id))
+      })
+
+      return cancels.reduce(q.when, q())
+    }).then((res) => {
+      resolve(res)
+    }).catch(err => {
+      console.log('ERR = ' + JSON.stringify(err))
+      reject(err)
+    })
+  })
 }
 
-function initWS () {
-  ws.on('message', triggerListener)
+B2Y.prototype.getOrderbook = function (pair) {
+  return new Promise((resolve, reject) => {
+    if (pair === undefined) pair = 'BTCBRL'
+    publicRequest(`/orderbook.aspx`, undefined, function (result) {
+      try {
+        if (!result) {
+          reject(new Error('ERROR GETTING TRADES B2Y' + JSON.stringify(result)))
+          return
+        }
+        var orderbook = {}
+        orderbook.buy = result.bids
+        orderbook.sell = result.asks
+        orderbook.buy = orderbook.buy.map(function (order) {
+          order.price = order[0]
+          order.amount = order[1]
+          delete order[1]
+          delete order[0]
+          return order
+        })
+        orderbook.sell = orderbook.sell.map(function (order) {
+          order.price = order[0]
+          order.amount = order[1]
+          delete order[1]
+          delete order[0]
+          return order
+        })
+      } catch (err) {
+        console.log(err)
+        reject(err)
+        return
+      }
+      resolve(orderbook)
+    }, function (err) {
+      console.log('REJECT')
+      reject(err)
+    })
+  })
+}
 
-  ws.on('open', function open () {
-    console.log('logging...')
-    let params = {
-      'UserName': keys.b2y.username,
-      'Password': keys.b2y.password
+B2Y.prototype.getBalance = function (pair) {
+  return new Promise((resolve, reject) => {
+    privateRequest('/balance.aspx', undefined, function (result) {
+      if (result.success !== '1') {
+        reject(new Error('ERROR GETTING BALANCE B2Y' + JSON.stringify(result)))
+        return
+      }
+      var balance = {}
+      balance.BRL = parseFloat(result.oReturn[0].BRL)
+      balance.BTC = parseFloat(result.oReturn[0].BTC)
+      resolve(balance)
+    }, function (err) {
+      reject(err)
+    })
+  })
+}
+
+B2Y.prototype.getOpenOrders = function (pair) {
+  return new Promise((resolve, reject) => {
+    if (pair === undefined) pair = 'BTCBRL'
+    var params = {
+      status: 'OPEN'
     }
 
-    privateRequest('WebAuthenticateUser', params, (res) => {
-      console.log(res)
-      let params = {
-        'Code': twoFactor.generateToken(keys.b2y.secret).token
-      }
-      privateRequest('Authenticate2FA', params, (res) => {
-        res = JSON.parse(res)
-        console.log(res.SessionToken)
-        SessionToken = res.SessionToken
+    privateRequest('/getorders.aspx', params, function (result) {
+      let orders = { buy: [], sell: [] }
+
+      // console.log(result.oReturn.filter(function (order) {
+      //   return order.status !== 'EXECUTED'
+      // }))
+
+      result.oReturn.filter(function (order) {
+        return order.status !== 'EXECUTED' && order.status !== 'CANCELED'
+      }).forEach((order) => {
+        var orderStruct = {
+          id: order.id,
+          side: order.action,
+          pair: pairsDict[pair],
+          price: order.price,
+          amount: order.amount,
+          timestamp: moment(order.dateCreated),
+          exchange: 'B2Y',
+          from: 'BTC',
+          to: 'BRL'
+        }
+        orders[order.action].push(orderStruct)
       })
-      console.log(params)
+      resolve(orders)
+    }, function (err) {
+      reject(err)
     })
   })
+}
 
-  ws.on('error', function (err) {
-    console.log(err)
+B2Y.prototype.getTrades = function (pair, since) {
+  // https://api.bitcointrade.com.br/v1/market/user_orders/list?status=executed_completely&start_date=2017-01-01&end_date=2018-01-01&currency=BTC&type=buy&page_size=100&current_page=1
+  // curl --location --request GET "https://api.bitcointrade.com.br/v2/market/user_orders/list?status=executed_completely&start_date=2017-01-01&end_date=2018-01-01&pair=BRLBTC&type=buy&page_size=100&current_page=1" \
+  // --header "Content-Type: application/json" \
+  // --header "Authorization: ApiToken U2Ft8tNnGwE7t3vvAc4ZxmUsdVkX18x+VrnwAYM249=" \
+  // --data ""
+
+  return new Promise((resolve, reject) => {
+    if (pair === undefined) pair = 'BTCBRL'
+    var params = {
+      pair: pairsDict[pair],
+      page_size: 300,
+      start_date: moment().subtract(12, 'hours').format('YYYY-MM-DD')
+      // end_date: moment().format('YYYY-MM-DD'),
+    }
+
+    privateRequest('/market/user_orders/list', params, function (result) {
+      let orders = []
+
+      if (!result.data) {
+        reject(new Error('ERROR GETTING TRADES B2Y' + JSON.stringify(result)))
+        return
+      }
+
+      result.data.orders.filter(function (order) {
+        return order.executed_amount > 0.0
+      }).forEach((order) => {
+        var orderStruct = {
+          // id: order.id,
+          side: order.type,
+          pair: pairsDict[pair],
+          price: order.unit_price,
+          fee: order.executed_amount * 0.0035,
+          amount: order.executed_amount,
+          timestamp: moment(order.create_date),
+          from: pair.substring(0, 3),
+          to: pair.substring(3, 6)
+        }
+        orderStruct.amount -= orderStruct.fee
+        orders.push(orderStruct)
+      })
+      resolve(orders)
+    }, function (err) {
+      reject(err)
+    })
   })
 }
+
+B2Y.prototype.sendOrder = function (pair, side, price, volume) {
+  return new Promise((resolve, reject) => {
+    if (pair === undefined) pair = 'BTCBRL'
+    var params = {
+      pair: pairsDict[pair],
+      type: side,
+      subtype: 'limited',
+      unit_price: price.toPrecision(6),
+      amount: volume.toPrecision(6)
+    }
+
+    privateRequest('/market/create_order', params, function (result) {
+      console.log('ORDER CREATED B2Y: ' + result.data.id)
+      resolve(result.data.id)
+    }, function (err) {
+      console.log('ERROR PLACING ON B2Y ' + err)
+      reject(err)
+    })
+  })
+}
+
+B2Y.prototype.cancelOrder = function (pair, id) {
+  return new Promise((resolve, reject) => {
+    var params = {
+      id: id
+    }
+
+    privateRequest('/market/user_orders/', params, function (result) {
+      console.log('ORDER REMOVED B2Y: ' + id)
+      resolve(id)
+    }, function (err) {
+      reject(err)
+    })
+  })
+}
+
+function privateRequest (method, parameters, success, error) {
+  setTimeout(() => {
+    if (!parameters) parameters = {}
+    let _nonce = nonce()
+    var signature = crypto.createHmac('sha256', config.secret)
+      .update(_nonce + config.key)
+      .digest().toString('base64')
+    let options = {
+      method: 'POST',
+      url: ENDPOINT_API + method,
+      form: parameters,
+      headers: {
+        'nonce': _nonce,
+        'key': config.key,
+        'signature': signature
+      }
+    }
+
+    // console.log(options.form)
+
+    request(options, function (err, response, body) {
+      // console.log(response.body)
+      // Empty response
+      if (!err && (typeof body === 'undefined' || body === null)) { err = 'Empty response' }
+
+      if (!isJson(body)) {
+        error('Cannot parse BZX body request = ' + body)
+        return
+      }
+
+      body = JSON.parse(body)
+
+      if (body.success === 0) {
+        error(body.message)
+        return
+      }
+
+      success(body)
+    })
+  }, getWaitTime())
+}
+
+function publicRequest (method, parameters, success, error) {
+  let options = {
+    method: 'GET',
+    url: ENDPOINT_API + method
+  }
+
+  // console.log(options);
+
+  request(options, function (err, response, body) {
+    if (!err && (typeof body === 'undefined' || body === null)) { err = 'Empty response' }
+    if (!err) {
+      try {
+        success(JSON.parse(body))
+      } catch (err) {
+        error(err)
+      }
+    } else { error(err) }
+  })
+}
+
+function isJson (str) {
+  try {
+    JSON.parse(str)
+  } catch (e) {
+    return false
+  }
+  return true
+}
+
+let lastB2Y = new Date().getTime()
+
+let getWaitTime = function () {
+  let now = moment()
+  let diff = moment().diff(moment(lastB2Y))
+  let wait = 0
+  if (diff < 1000) {
+    wait = 1000 - diff
+  }
+  lastB2Y = now.valueOf() + wait
+  return wait
+}
+
+module.exports = B2Y
