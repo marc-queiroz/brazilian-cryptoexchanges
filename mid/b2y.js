@@ -5,7 +5,7 @@ var request = require('request')
 var nonce = require('nonce')()
 var qs = require('querystring')
 
-let ENDPOINT_API = 'https://www.bitcointoyou.com/API'
+let ENDPOINT_API = 'https://api_v1.bitcointoyou.com'
 
 let pairsDict = {
   BTCBRL: 'BRLBTC',

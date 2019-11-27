@@ -108,6 +108,44 @@ Foxbit.prototype.setTradesListener = function (pairs, callback) {
   }, 9000)
 }
 
+Foxbit.prototype.setTickerListener = function (pairs, callback) {
+  var self = this
+  setInterval(function () {
+    var promises = []
+    Object.keys(pairs).forEach(function (pair) {
+      promises.push(self.getTicker())
+    })
+    q.all(promises)
+      .then(function (res) {
+        res.forEach(r => {
+          callback(r)
+        })
+      })
+      .catch(function (err) {
+        console.log(err)
+      })
+  }, 60000)
+}
+
+Foxbit.prototype.getTicker = function (pair) {
+  return new Promise((resolve, reject) => {
+    if (pair === undefined) pair = 'BTCBRL'
+    privateRequest('SubscribeTicker', {
+      OMSId: this.config.fxb.OMSId, // Got using GetUserInfo
+      InstrumentId: instrumentDictFrom[pair],
+      Interval: 60,
+      IncludeLastCount: 100
+    }, (res) => {
+      try {
+        console.error('typeof:', typeof res)
+        resolve(JSON.parse(res))
+      } catch (err) {
+        reject(err)
+      }
+    })
+  })
+}
+
 Foxbit.prototype.clearOrders = function (pair) {
   return new Promise((resolve, reject) => {
     if (pair === undefined) pair = 'BTCBRL'
